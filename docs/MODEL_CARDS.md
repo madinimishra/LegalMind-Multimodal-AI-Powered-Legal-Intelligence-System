@@ -1,0 +1,34 @@
+# Model cards
+
+Numbers below were produced in this repository on 2026-10-08/12; each links to the script and result file that made it.
+Cards for models whose training has not run yet say so and carry no numbers.
+
+## Clause classifier (CUAD): `backend/app/models/clause_classifier/cuad.joblib`
+- **What:** TF-IDF (word 1-2 grams) + linear SVM, 41 CUAD clause categories + "None". Used by `GET /api/documents/{id}/clauses`.
+- **Data:** CUAD (CC-BY-4.0), contract-level train/test split of `theatticusproject/cuad-qa`; "None" = random 600-character windows that overlap no annotated span.
+- **Result (test split, 3,276 spans):** micro-F1 0.781, macro-F1 0.647. Weak labels: Price Restrictions (0.00), Unlimited/All-You-Can-Eat-License (0.00), Most Favored Nation (0.29), Affiliate License-Licensee (0.35). Per-label F1: `report.json` next to the model.
+- **Limits:** US commercial contracts only; Indian clauses (stamp duty, arbitration seat) are not in training data. Margin is an SVM score, not a probability. Not for legal decisions.
+- **Reproduce:** `backend/scripts/train_clause_classifier.py`.
+
+## Provision classifier (LEDGAR): `.../ledgar.joblib`
+- Same architecture, 100 provision types from LexGLUE/LEDGAR (SEC filings). Test split 10,000: micro-F1 0.875, macro-F1 0.824. Not used in the app yet.
+
+## Risk rubric ("issues to check"): `backend/app/legal/risk.py`
+- Rule layer (category priority + regex flags + document-level checks), not a trained model. It is a screening aid: each clause shows why it matters under Indian law, a *common negotiating position*, and, where it depends on whose side you are on, a perspective note.
+- **Provenance and status:** rewritten on 2026-10-15 from review comments supplied by the project owner (author not stated). The statute and case citations in them (for example Percept D'Mark, Fateh Chand, Kailash Nath, TRF v Energo) were **not independently verified** by the developer. **A qualified lawyer's sign-off is still required** before anyone relies on it; the app states "rules last reviewed 2026-10-15" and "not legal advice" on screen.
+- **Taxonomy limit:** the clause categories come from CUAD (US commercial contracts). Indian-specific checks (s.28 restraints, stamp duty/registration, unilateral arbitrator appointment, force majeure, s.12A mediation, forfeiture, DPDP) have no classifier behind them and run on keyword rules only, so they miss paraphrases and can fire on unrelated text.
+- Priority is not party-aware: the same clause can favour either side; read the perspective note.
+
+## Embedder v1 `backend/app/models/legal-bge-finetuned` (pre-existing)
+- bge-small-en-v1.5 fine-tuned on synthetic legal documents. Reported 0.967 Recall@5 on the same synthetic distribution.
+- **Real-data result (`backend/eval/results/ablation.json`):** does not beat the base model. AILA case docs dense nDCG@10 0.204 vs 0.235 base; LegalBench consumer-contracts QA 0.685 vs 0.734; AILA statutes 0.242 vs 0.230. Treat the synthetic score as optimistic.
+
+## Embedder v2, reranker (`legal-bge-v2`, `legal-reranker`)
+- Training scripts written (`finetune_embedder_v2.py`, `finetune_reranker.py`); results are written to `training_report.json` in each model folder and to `eval/results/timesplit.json` once `scripts/post_ingest_pipeline.sh` has run. **No numbers yet.**
+
+## Stamp / signature detector: `backend/app/models/stamp_detector/weights/best.pt`
+- **What:** YOLO11n fine-tuned for 10 epochs on CPU (35 min) on 1,348 synthetic pages: procedurally generated stamps/seals and signatures (random shape, text, ink, rotation, blur, noise) composited on real Supreme Court page renders and blank pages (`scripts/vision/make_synthetic_stamps.py`). Classes: stamp, signature.
+- **Result on 152 held-out synthetic pages (227 objects):** mAP@0.5 0.989 (stamp 0.994, signature 0.984), mAP@0.5-0.95 0.813. **Optimistic**: the test pages come from the same generator as the training pages.
+- **Real-page check (the only one so far):** on 120 real Supreme Court pages from judgments it never saw (digital PDFs, no stamps expected), it fired on 4 pages (1 stamp, 3 signature boxes; at confidence 0.25). I did not verify whether those are false positives, since judgments can carry real signature blocks. This says nothing about recall on real scanned stamps.
+- **Missing for an honest score:** real annotated scans (Tobacco-800, Roboflow/Kaggle stamp sets, or about 100 hand-annotated pages). Not wired into the live grounding path yet.
+- **Reproduce:** `scripts/vision/make_synthetic_stamps.py -n 1500` then `scripts/vision/train_detector.py --epochs 10 --imgsz 512 --batch 8 --device cpu` (needs `ultralytics`).
